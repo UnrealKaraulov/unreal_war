@@ -13,8 +13,6 @@ new bool:g_bActivateClanWarMode = false;
 
 new bool:g_bIsPaused = false;
 
-new bool:g_bLastHitTerrorist = false;
-
 new g_iPauseNum = 4;
 
 new g_iGameStage = 0;
@@ -123,7 +121,6 @@ public plugin_init()
 	RegisterHookChain(RG_CBasePlayer_Killed, "Player_Killed_Post", .post = true);
 	RegisterHookChain(RG_PlantBomb, "PlantBomb_POST",  .post = true)
 	RegisterHookChain(RG_CGrenade_DefuseBombStart, "DefuseBomb_POST",  .post = true);
-	RegisterHookChain(RG_CSGameRules_FPlayerCanTakeDamage, "CSGameRules_FPlayerCanTakeDmg", .post = false)
 
 	g_pcvar_mp_c4timer = get_cvar_pointer("mp_c4timer");
 
@@ -404,24 +401,6 @@ public CW_MENU_HANDLER(id, vmenu, item)
 
 	menu_destroy(vmenu);
 	return PLUGIN_HANDLED;
-}
-
-
-public CSGameRules_FPlayerCanTakeDmg(const pPlayer, const pAttacker)
-{
-	if (pPlayer != pAttacker && pAttacker > 0 && pAttacker <= 32 && is_user_connected(pAttacker))
-	{
-		new TeamName:team = get_member(pAttacker, m_iTeam);
-		if (TEAM_TERRORIST == team)
-		{
-			g_bLastHitTerrorist = true;
-		}
-		else 
-		{
-			g_bLastHitTerrorist = false;
-		}
-	}
-	return HC_CONTINUE;
 }
 
 
@@ -928,21 +907,9 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 			g_bTerroristWinners = true;
 			set_task_ex(5.5,"cw_menu_vote_team_tt");
 		}
-		else if (status == WINSTATUS_CTS)
+		else if (status == WINSTATUS_CTS || status == WINSTATUS_DRAW)
 		{
 			set_task_ex(5.5,"cw_menu_vote_team_ct");
-		}
-		else 
-		{
-			if (g_bLastHitTerrorist)
-			{
-				g_bTerroristWinners = true;
-				set_task_ex(5.5,"cw_menu_vote_team_tt");
-			}
-			else 
-			{
-				set_task_ex(5.5,"cw_menu_vote_team_ct");
-			}
 		}
 		
 		cw_mode_show_message_vote_start();
