@@ -99,6 +99,8 @@ public plugin_init()
 {
 	register_plugin("UNREAL WAR MODE", "1.7", "Karaulov");
 
+	create_cvar("unreal_war", "1.7", (FCVAR_SERVER | FCVAR_SPONLY | FCVAR_UNLOGGED));
+
 	register_clcmd("cw_mode_menu", "give_me_cw_menu")
 	register_clcmd("cw_menu", "give_me_cw_menu")
 
