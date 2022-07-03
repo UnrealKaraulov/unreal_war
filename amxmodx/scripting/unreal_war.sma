@@ -15,6 +15,7 @@ new bool:g_bIsPaused = false;
 new g_iPauseNum = 4;
 
 new g_iGameStage = 0;
+
 new g_iPauseTime = 0;
 
 new g_msgScoreInfo = 0;
@@ -522,7 +523,7 @@ public cw_mode_update_gameinfo(id)
 		new message[33];
 		if (g_iGameStage == 1)
 		{
-			formatex(message,charsmax(message),"[CW] GAME: [%s]","WARMUP %d MIN", g_iWarmupMinutes);
+			formatex(message,charsmax(message),"[CW] GAME: [WARMUP %d MIN]", g_iWarmupMinutes);
 		}
 		else if (g_iGameStage == 2)
 		{
