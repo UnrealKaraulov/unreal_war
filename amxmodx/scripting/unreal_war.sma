@@ -8,7 +8,6 @@
 #include <fun>
 #include <sockets>
 
-
 new bool:g_bActivateClanWarMode = false;
 
 new bool:g_bIsPaused = false;
@@ -24,6 +23,8 @@ new g_msgServerName = 0;
 new g_iServerPassword = 0;
 new g_Round = 0;
 
+new g_iNoUsersWarn = 0;
+
 new g_iPauseInitializer = 0;
 
 new g_bClanWarModeEnding = false;
@@ -31,6 +32,8 @@ new g_bClanWarModeEnding = false;
 new g_pcvar_mp_c4timer = 0;
 
 new g_iVault = 0;
+
+new g_iUserCW = 0;
 
 enum _:cwData
 {
@@ -48,8 +51,6 @@ new g_iVotesCT = 0;
 
 new g_iOverTimeLastRound = 0;
 
-// Последние дополнительные раунды?
-
 new bool:g_bSwappedWinners = true;
 
 new g_iGameNum = 0;
@@ -62,7 +63,6 @@ new g_iOverTimes = 0;
 new g_iWarmupMinutes = 5;
 
 new bool:g_bNeed1000Money = false;
-
 
 new bool:g_bHLTVWARN = true;
 
@@ -105,27 +105,27 @@ public plugin_init()
 	register_clcmd("say cw_menu", "give_me_cw_menu")
 	register_clcmd("say /cw_menu", "give_me_cw_menu")
 
-	register_concmd("say !pause", "give_me_pause");
-	register_concmd("say_team !pause", "give_me_pause");
+	register_concmd("say !pause", "cw_mode_saypause");
+	register_concmd("say_team !pause", "cw_mode_saypause");
 
-	register_concmd("say /pause", "give_me_pause");
-	register_concmd("say_team /pause", "give_me_pause");
+	register_concmd("say /pause", "cw_mode_saypause");
+	register_concmd("say_team /pause", "cw_mode_saypause");
 
 	g_msgScoreInfo = get_user_msgid("ScoreInfo")
 	g_msgServerName = get_user_msgid("ServerName")
 
-	RegisterHookChain(RG_RoundEnd, "RoundEnd_Pre",  .post = false);
-	RegisterHookChain(RG_CBasePlayer_Spawn, "CBasePlayer_Spawn_Post",  .post = true);
-	RegisterHookChain(RG_CBasePlayer_AddPlayerItem, "AddItem", .post = false);
-	RegisterHookChain(RG_BuyWeaponByWeaponID, "BuyWeaponByWeaponID", .post = false);
-	RegisterHookChain(RG_CBasePlayer_Killed, "Player_Killed_Post", .post = true);
-	RegisterHookChain(RG_PlantBomb, "PlantBomb_POST",  .post = true)
-	RegisterHookChain(RG_CGrenade_DefuseBombStart, "DefuseBomb_POST",  .post = true);
+	RegisterHookChain(RG_RoundEnd, "CS_RoundEnd",  .post = false);
+	RegisterHookChain(RG_CBasePlayer_Spawn, "CBasePlayer_Spawn",  .post = true);
+	RegisterHookChain(RG_CBasePlayer_AddPlayerItem, "CBasePlayer_AddPlayerItem", .post = false);
+	RegisterHookChain(RG_CBasePlayer_HasRestrictItem, "CBasePlayer_HasRestrictItem", .post = false);
+	RegisterHookChain(RG_CBasePlayer_Killed, "CBasePlayer_Killed", .post = true);
+	RegisterHookChain(RG_PlantBomb, "CS_PlantBomb",  .post = true)
+	RegisterHookChain(RG_CGrenade_DefuseBombStart, "CGrenade_DefuseBombStart",  .post = true);
 
 	g_pcvar_mp_c4timer = get_cvar_pointer("mp_c4timer");
 
-	set_task_ex(5.0, "just_update_info_without_hooks", .flags = SetTask_Repeat);
-	set_task_ex(1.0, "pause_watcher", .flags = SetTask_Repeat);
+	set_task_ex(3.5, "cw_mode_update_gameinfo", .flags = SetTask_Repeat);
+	set_task_ex(1.0, "cw_mode_watcher", .flags = SetTask_Repeat);
 
 	g_iVault = nvault_open("clanwar_data")
 
@@ -266,9 +266,14 @@ public plugin_end()
 	}
 }
 
+public bool:is_cw_mode_active()
+{
+	return  g_bActivateClanWarMode && !g_bClanWarModeEnding;
+}
+
 public bool:is_game_started()
 {
-	return g_iGameStage == 0 && g_bActivateClanWarMode;
+	return g_iGameStage == 0 && is_cw_mode_active();
 }
 
 public bool:is_any_hltv_found()
@@ -346,7 +351,7 @@ public CW_MENU_HANDLER(id, vmenu, item)
 				client_print_color(0, print_team_red, "^4[%s]^3 Вы пытаетесь запустить CW без HLTV????",cw_servername);
 			}
 			else 
-				give_me_cw(id);
+				cw_mode_say_initialize(id);
 				
 		}
 		case 2:
@@ -355,11 +360,11 @@ public CW_MENU_HANDLER(id, vmenu, item)
 		}
 		case 3:
 		{
-			give_me_restart(id);
+			cw_mode_map_restart(id);
 		}
 		case 4:
 		{
-			give_me_fullrestart(id);
+			cw_mode_server_restart(id);
 		}
 		case 5:
 		{
@@ -406,9 +411,9 @@ public CW_MENU_HANDLER(id, vmenu, item)
 
 new Float:c4PlantTime = 0.0;
 
-public PlantBomb_POST(const index, Float:vecStart[3], Float:vecVelocity[3])
+public CS_PlantBomb(const index, Float:vecStart[3], Float:vecVelocity[3])
 {
-	if (g_bActivateClanWarMode)
+	if (is_cw_mode_active())
 	{
 		c4PlantTime = get_gametime() + get_pcvar_num( g_pcvar_mp_c4timer );
 		if (is_user_connected(index))
@@ -432,9 +437,9 @@ public PlantBomb_POST(const index, Float:vecStart[3], Float:vecVelocity[3])
 	}
 }
 
-public DefuseBomb_POST(const ent, const id)
+public CGrenade_DefuseBombStart(const ent, const id)
 {
-	if (g_bActivateClanWarMode)
+	if (is_cw_mode_active())
 	{
 		if (is_user_connected(id))
 		{
@@ -479,58 +484,35 @@ public DefuseBomb_POST(const ent, const id)
 	}
 }
 
-public AddItem(id, pItem)
+public CBasePlayer_AddPlayerItem(id, pItem)
 {
-	if(!is_user_connected(id) || !is_user_alive(id))
+	if(!is_valid_ent(pItem) || !is_cw_mode_active())
 	{
 		return HC_CONTINUE;
 	}
-	
 	if ( g_iGameStage == 2 && get_member(pItem, m_iId) != WEAPON_KNIFE)
 	{
 		SetHookChainReturn(ATYPE_INTEGER, 0);
 		return HC_SUPERCEDE;
 	}
-	
-	if ( get_member(pItem, m_iId) == WEAPON_SG550 ||  get_member(pItem, m_iId) == WEAPON_SHIELDGUN || 
-	 get_member(pItem, m_iId) == WEAPON_G3SG1)
-	{
-		SetHookChainReturn(ATYPE_INTEGER, 0);
-		return HC_SUPERCEDE;
-	}
 	return HC_CONTINUE;
 }
 
-public BuyWeaponByWeaponID(id, WeaponIdType:weaponID)
+public CBasePlayer_HasRestrictItem(const id, const ItemID:item, const ItemRestType:type)
 {
-	if(!is_user_connected(id) || !is_user_alive(id))
-	{
-		return HC_CONTINUE;
-	}
-	if ( g_iGameStage == 2 )
-	{
-		SetHookChainArg(2,ATYPE_INTEGER,0);
-		SetHookChainReturn(ATYPE_INTEGER,0);
-		return HC_SUPERCEDE;
-	}
-	if ( weaponID == WEAPON_SG550 ||  weaponID == WEAPON_SHIELDGUN || 
-	weaponID == WEAPON_G3SG1)
-	{
-		rg_set_weapon_info(weaponID, WI_COST, 0);
-		SetHookChainArg(2,ATYPE_INTEGER,0);
-		SetHookChainReturn(ATYPE_INTEGER,0);
-		return HC_SUPERCEDE;
-	}
-	return HC_CONTINUE;
+    if (is_cw_mode_active() && (item == ITEM_SG550 || item == ITEM_G3SG1 || item == ITEM_SHIELDGUN))
+    {
+        if (type == ITEM_TYPE_BUYING) {
+            client_print(id, print_center, "* This item is restricted *");
+        }
+        SetHookChainReturn(ATYPE_BOOL, true);
+        return HC_SUPERCEDE;
+    }
+
+    return HC_CONTINUE;
 }
 
-msg_servername(iPlayer, msg[]) {
-	message_begin(MSG_ONE_UNRELIABLE, g_msgServerName, .player = iPlayer);
-	write_string(msg);
-	message_end();
-}
-
-public just_update_info_without_hooks(id)
+public cw_mode_update_gameinfo(id)
 {
 	new mPlayers[32];
 	new mCount;
@@ -540,7 +522,7 @@ public just_update_info_without_hooks(id)
 		new message[33];
 		if (g_iGameStage == 1)
 		{
-			formatex(message,charsmax(message),"[CW] GAME: [%s]","WARMUP TIME");
+			formatex(message,charsmax(message),"[CW] GAME: [%s]","WARMUP %d MIN", g_iWarmupMinutes);
 		}
 		else if (g_iGameStage == 2)
 		{
@@ -582,9 +564,9 @@ public cw_mode_game_happy()
 	xshow_dhudmessage(0, "Удачной вам игры!");
 }
 
-public CBasePlayer_Spawn_Post(const id) 
+public CBasePlayer_Spawn(const id) 
 {
-	if (is_user_bot(id) || is_user_hltv(id) || !is_user_connected(id))
+	if ( !is_cw_mode_active() || !is_user_connected(id) || is_user_bot(id) || is_user_hltv(id))
 		return;
 	
 	if (g_bNeed1000Money)
@@ -595,12 +577,9 @@ public CBasePlayer_Spawn_Post(const id)
 		
 	UpdateScore(id, g_ClanWarData[id][KILLS], g_ClanWarData[id][DEATHS]);
 	
-	if (g_bActivateClanWarMode)
-	{
-		rg_set_user_rendering(id);
-		set_entity_visibility(id,1)
-		set_user_rendering(id, kRenderFxNone, 255, 255, 255, kRenderNormal, 255)
-	}
+	rg_set_user_rendering(id);
+	set_entity_visibility(id,1)
+	set_user_rendering(id, kRenderFxNone, 255, 255, 255, kRenderNormal, 255)
 }
 
 public cw_mode_clear_all_stats()
@@ -624,9 +603,9 @@ public cw_mode_stop_warmup(id)
 	}
 }
 
-public Player_Killed_Post(iVictim, iAttacker, iGib)
+public CBasePlayer_Killed(iVictim, iAttacker, iGib)
 {
-	if (!g_bClanWarModeEnding)
+	if (is_cw_mode_active())
 	{
 		if (is_user_connected(iVictim) && is_user_connected(iAttacker))
 		{
@@ -687,7 +666,7 @@ public cw_mode_show_message_start_choose_team()
 	xshow_dhudmessage(0, "У победителей 30 сек для выбора команды!");
 }
 
-public check_vote_result(id)
+public cw_mode_vote_post(id)
 {
 	if (g_iVotesTT > g_iVotesCT)
 	{
@@ -736,9 +715,9 @@ public check_vote_result(id)
 	set_task_ex(8.0,"cw_mode_game_happy");
 	set_task_ex(10.5,"cw_mode_game_happy");
 	
-	set_task_ex(10.0,"make_restart");
-	set_task_ex(11.0,"make_restart");
-	set_task_ex(12.0,"make_restart");
+	set_task_ex(10.0,"cw_mode_restartround");
+	set_task_ex(11.0,"cw_mode_restartround");
+	set_task_ex(12.0,"cw_mode_restartround");
 	
 	cw_mode_init_game();
 }
@@ -889,10 +868,10 @@ public cw_menu_vote_team_ct()
 
 
 
-public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
+public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 {  
 	if (status == WINSTATUS_NONE || event == ROUND_GAME_COMMENCE
-		|| event == ROUND_GAME_RESTART || !g_bActivateClanWarMode)
+		|| event == ROUND_GAME_RESTART || !is_cw_mode_active())
 	{
 		return;
 	}
@@ -918,10 +897,13 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 		set_task_ex(5.5,"cw_mode_show_message_vote_start");
 		set_task_ex(7.0,"cw_mode_show_message_start_choose_team");
 		
-		set_task_ex(30.0, "check_vote_result");
+		set_task_ex(30.0, "cw_mode_vote_post");
 	}
 	else if (is_game_started())
 	{
+		set_task_ex(3.0,"cw_update_teamscores");
+		set_task_ex(10.0,"cw_update_teamscores");
+		
 		g_Round++;
 		if (g_bIsPaused)
 		{
@@ -934,7 +916,7 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 		{
 			server_cmd("mp_freezetime 10");
 		}
-		if (!g_bClanWarModeEnding)
+		if (is_cw_mode_active())
 		{
 			if (status == WINSTATUS_TERRORISTS)
 			{
@@ -998,7 +980,7 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 			
 			server_cmd("swapteams");
 			server_exec();
-			mega_restart();
+			cw_mode_multirestart();
 			swap_wins2();
 		}
 		else if (g_iOverTimeLastRound > 0)
@@ -1012,12 +994,11 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 					client_print_color(0, print_team_red, "^4[%s]^3 Игра завершится через 60 секун!!!!",cw_servername);
 					
 					set_task_ex(1.0,"cw_mode_game_over_start");
-	
 					set_task_ex(5.0,"cw_mode_game_over_end");
 	
 
-					set_task_ex(60.0,"kick_all_players2")
-					set_task_ex(65.0,"kick_all_players2")
+					set_task_ex(60.0,"cw_kick_players_game_end")
+					set_task_ex(65.0,"cw_kick_players_game_end")
 					
 					g_bClanWarModeEnding = true;
 				}
@@ -1050,8 +1031,8 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 				set_task_ex(5.0,"cw_mode_game_over_end");
 
 
-				set_task_ex(60.0,"kick_all_players2")
-				set_task_ex(65.0,"kick_all_players2")
+				set_task_ex(60.0,"cw_kick_players_game_end")
+				set_task_ex(65.0,"cw_kick_players_game_end")
 				
 				g_bClanWarModeEnding = true;
 			}
@@ -1086,8 +1067,8 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 
 
 				g_bClanWarModeEnding = true;
-				set_task_ex(60.0,"kick_all_players2")
-				set_task_ex(65.0,"kick_all_players2")
+				set_task_ex(60.0,"cw_kick_players_game_end")
+				set_task_ex(65.0,"cw_kick_players_game_end")
 			}
 			else if (g_iWins_CT > cw_norm_winner && g_iWins_CT > g_iWins_TT)
 			{
@@ -1100,8 +1081,8 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 
 
 				g_bClanWarModeEnding = true;
-				set_task_ex(60.0,"kick_all_players2")
-				set_task_ex(65.0,"kick_all_players2")
+				set_task_ex(60.0,"cw_kick_players_game_end")
+				set_task_ex(65.0,"cw_kick_players_game_end")
 			}
 			else if (g_iWins_TT == cw_norm_winner && g_iWins_CT == cw_norm_winner)
 			{		
@@ -1126,8 +1107,6 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 				set_task_ex(1.5,"cw_mode_game_lastround");
 			}
 		}
-		set_task_ex(3.0,"update_teamscores_timer");
-		set_task_ex(10.0,"update_teamscores_timer");
 	}
 	else 
 	{
@@ -1136,12 +1115,12 @@ public RoundEnd_Pre(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay
 	}
 } 
 
-public update_teamscores_timer(id)
+public cw_update_teamscores(id)
 {
 	rg_update_teamscores(g_bSwappedWinners ? g_iWins_CT : g_iWins_TT, g_bSwappedWinners ? g_iWins_TT : g_iWins_CT, false);
 }
 
-public give_me_pause(id)
+public cw_mode_saypause(id)
 {
 	if (g_iPauseNum == 0 || cw_pause_enable <= 0)
 	{
@@ -1185,8 +1164,7 @@ public bool:no_has_any_player()
 	return mCount == 0;
 }
 
-new g_iNoUsersWarn = 0;
-public monitor_no_users()
+public cw_monitor_no_users()
 {
 	if (no_has_any_player() && g_bActivateClanWarMode)
 	{
@@ -1202,10 +1180,9 @@ public monitor_no_users()
 	}
 }
 
-public pause_watcher(id)
+public cw_mode_watcher(id)
 {
-
-	monitor_no_users();
+	cw_monitor_no_users();
 
 	g_iPauseTime--;
 	if (!g_bIsPaused && g_iPauseTime > 0 && g_iPauseInitializer != 0 && (g_iPauseTime % 5) == 0)
@@ -1293,8 +1270,8 @@ public client_putinserver(id)
 		return;
 	if (cw_pov_autorecord > 0)
 	{
-		set_task_ex(5.0, "stop_demo", .id = id);
-		set_task_ex(10.0, "stop_demo", .id = id);
+		set_task_ex(5.0, "cw_stop_demo", .id = id);
+		set_task_ex(10.0, "cw_stop_demo", .id = id);
 	}
 	if ( is_user_hltv(id) )
 		return;
@@ -1317,30 +1294,29 @@ public client_putinserver(id)
 	
 	if (cw_pov_autorecord > 0)
 	{
-		set_task_ex(25.0, "record_demo_notify", .id = id);
-		set_task_ex(30.0, "record_demo", .flags = SetTask_Repeat ,.id = id);
+		set_task_ex(25.0, "cw_record_demo_notify", .id = id);
+		set_task_ex(30.0, "cw_record_demo", .flags = SetTask_Repeat ,.id = id);
 	}
 }
 
-public stop_demo(id)
+public cw_stop_demo(id)
 {
 	client_cmd(id,"stop");
 }
 
-public record_demo_notify(id)
+public cw_record_demo_notify(id)
 {
 	client_print_color(id, print_team_red,"^4[%s]^3[CW MODE]^1 Идёт запись демо!",cw_servername)
 }
 
-public record_demo(id)
+public cw_record_demo(id)
 {
 	new mapname[33];
 	get_mapname(mapname,charsmax(mapname));
 	client_cmd(id,"record ^"cw_%s^"",mapname);
 }
 
-new notkikme = 0;
-public give_me_cw(id)	
+public cw_mode_say_initialize(id)	
 {
 	if (get_user_flags(id) & ADMIN_BAN)
 	{
@@ -1351,21 +1327,22 @@ public give_me_cw(id)
 		}
 		g_bActivateClanWarMode = true;
 		
-		stop_all_bad_plugins(id);
-		install_random_password(id);
+		cw_stop_preinstalled_plugins(id);
+		cw_init_password(id);
 		
-		notkikme = id;
-		kick_all_players(0);
+		g_iUserCW = id;
 		
-		set_task_ex(3.0,"kick_all_players");
-		set_task_ex(5.0,"kick_all_players");
+		cw_kick_players_game_start(0);
+		set_task_ex(3.0,"cw_kick_players_game_start");
+		set_task_ex(5.0,"cw_kick_players_game_start");
 		
 		new g_sConfigDirPath[256];
 		get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 		server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_warmup_config);
 		server_exec();
 		
-		make_all_other(id);
+		cw_init_hostname_and_pwd(id);
+		
 		g_iGameStage = 1;
 		
 		g_iWarmupMinutes = cw_warmup_time;
@@ -1379,7 +1356,7 @@ public give_me_cw(id)
 	}
 }
 
-public give_me_restart(id)	
+public cw_mode_map_restart(id)	
 {
 	if (get_user_flags(id) & ADMIN_BAN)
 	{
@@ -1387,7 +1364,7 @@ public give_me_restart(id)
 	}
 }
 
-public give_me_fullrestart(id)	
+public cw_mode_server_restart(id)	
 {
 	if (get_user_flags(id) & ADMIN_BAN)
 	{
@@ -1436,8 +1413,8 @@ public cw_warmup_time_end( id )
 	xset_dhudmessage(100, 150, 0, -1.0, 0.25, 0, 0.0, 7.0, 0.0, 0.0);
 	xshow_dhudmessage(0, "Разминка завершена...");
 	
-	set_task_ex(2.0,"make_restart");
-	set_task_ex(4.0,"make_restart");
+	set_task_ex(2.0,"cw_mode_restartround");
+	set_task_ex(4.0,"cw_mode_restartround");
 	
 	set_task_ex(6.0,"cw_initialize_knife_round");
 	
@@ -1449,14 +1426,14 @@ public cw_warmup_time_end( id )
 	server_exec();
 }
 
-public mega_restart()
+public cw_mode_multirestart()
 {
-	set_task_ex(2.0,"make_restart");
-	set_task_ex(4.0,"make_restart");
-	set_task_ex(6.0,"make_restart");
+	set_task_ex(2.0,"cw_mode_restartround");
+	set_task_ex(4.0,"cw_mode_restartround");
+	set_task_ex(6.0,"cw_mode_restartround");
 }
 
-public make_restart(id)
+public cw_mode_restartround(id)
 {
 	server_cmd("sv_restart 1");
 }
@@ -1477,14 +1454,7 @@ public cw_initialize_knife_round(id)
 	}
 }
 
-
-public make_restart3(id)
-{
-	server_cmd("sv_restart 1");
-	g_iGameStage = 2;
-}
-
-public kick_all_players(id)
+public cw_kick_players_game_start(id)
 {
 	new mPlayers[32];
 	new mCount;
@@ -1495,7 +1465,7 @@ public kick_all_players(id)
 		{
 			
 		}
-		else if (mPlayers[i] != notkikme)
+		else if (mPlayers[i] != g_iUserCW)
 		{
 			server_cmd("kick #%d ^"Извините проводится CW матч^"",get_user_userid(mPlayers[i]));
 		}
@@ -1503,7 +1473,7 @@ public kick_all_players(id)
 	server_exec();
 }
 
-public kick_all_players2(id)
+public cw_kick_players_game_end(id)
 {
 	new mPlayers[32];
 	new mCount;
@@ -1519,7 +1489,7 @@ public kick_all_players2(id)
 	server_cmd("restart");
 }
 
-public stop_all_bad_plugins(id)
+public cw_stop_preinstalled_plugins(id)
 {	
 	/* Остановка моего ReRuneMod */
 	pause("c", "rm_base.amxx");
@@ -1535,14 +1505,14 @@ public stop_all_bad_plugins(id)
 	new iEntity = 0;
 	while( ( iEntity = find_ent_by_class( iEntity, "rune_model" ) ) )
 	{
-		if( pev_valid( iEntity ) )
+		if( is_valid_ent( iEntity ) )
 		{
 			remove_entity(iEntity);
 		}
 	}
 }
 
-public install_random_password(id)
+public cw_init_password(id)
 {
 	g_iServerPassword = random_num(1000,9999);
 	server_cmd("sv_password ^"%d^"",g_iServerPassword);
@@ -1560,22 +1530,21 @@ public install_random_password(id)
 	}
 	server_exec();
 	
-	client_print_color(id, print_team_red, "^4[%s]^3 Установлен пароль ^2%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
+	client_print_color(id, print_team_red, "^4[%s]^3 Установлен пароль ^1%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 	client_print_color(id, print_team_blue, "^4[%s]^3 Установлен пароль ^2%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
-	client_print_color(id, print_team_default, "^4[%s]^3 Установлен пароль ^2%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
+	client_print_color(id, print_team_default, "^4[%s]^3 Установлен пароль ^4%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 }
 
-public make_all_other(id)
+public cw_init_hostname_and_pwd(id)
 {
-	set_task_ex(2.0,"make_restart");
-	set_task_ex(4.0,"make_restart");
-	set_task_ex(6.0,"make_restart");
+	cw_mode_multirestart();
 	
 	g_bIsPaused = false;
 	
 	new mPlayers[32];
 	new mCount;
 	get_players(mPlayers, mCount,"hc");
+	
 	for(new i = 0; i < mCount; i++)
 	{
 		if (is_user_connected(mPlayers[i]))
@@ -1630,28 +1599,28 @@ stock rg_set_user_rendering(const index, fx = kRenderFxNone, {Float,_}:color[3] 
 
 
 
-stock __dhud_color;
-stock __dhud_x;
-stock __dhud_y;
-stock __dhud_effect;
-stock __dhud_fxtime;
-stock __dhud_holdtime;
-stock __dhud_fadeintime;
-stock __dhud_fadeouttime;
+stock __xdhud_color;
+stock __xdhud_x;
+stock __xdhud_y;
+stock __xdhud_effect;
+stock __xdhud_fxtime;
+stock __xdhud_holdtime;
+stock __xdhud_fadeintime;
+stock __xdhud_fadeouttime;
 
 stock xset_dhudmessage( red = 0, green = 160, blue = 0, Float:x = -1.0, Float:y = 0.65, effects = 2, Float:fxtime = 0.0, Float:holdtime = 3.0, Float:fadeintime = 0.0, Float:fadeouttime = 0.0)
 {
     #define clamp_byte(%1)       ( clamp( %1, 0, 255 ) )
     #define pack_color(%1,%2,%3) ( %3 + ( %2 << 8 ) + ( %1 << 16 ) )
 
-    __dhud_color       = pack_color( clamp_byte( red ), clamp_byte( green ), clamp_byte( blue ) );
-    __dhud_x           = _:x;
-    __dhud_y           = _:y;
-    __dhud_effect      = effects;
-    __dhud_fxtime      = _:fxtime;
-    __dhud_holdtime    = _:holdtime;
-    __dhud_fadeintime  = _:fadeintime;
-    __dhud_fadeouttime = _:fadeouttime;
+    __xdhud_color       = pack_color( clamp_byte( red ), clamp_byte( green ), clamp_byte( blue ) );
+    __xdhud_x           = _:x;
+    __xdhud_y           = _:y;
+    __xdhud_effect      = effects;
+    __xdhud_fxtime      = _:fxtime;
+    __xdhud_holdtime    = _:holdtime;
+    __xdhud_fadeintime  = _:fadeintime;
+    __xdhud_fadeouttime = _:fadeouttime;
 
     return 1;
 }
@@ -1668,14 +1637,14 @@ stock send_dhudMessage( const index, const message[] )
 	message_begin( index ? MSG_ONE : MSG_ALL , SVC_DIRECTOR, _, index );
 	write_byte( strlen( buffer ) + 31 );
 	write_byte( DRC_CMD_MESSAGE );
-	write_byte( __dhud_effect );
-	write_long( __dhud_color );
-	write_long( __dhud_x );
-	write_long( __dhud_y );
-	write_long( __dhud_fadeintime );
-	write_long( __dhud_fadeouttime );
-	write_long( __dhud_holdtime );
-	write_long( __dhud_fxtime );
+	write_byte( __xdhud_effect );
+	write_long( __xdhud_color );
+	write_long( __xdhud_x );
+	write_long( __xdhud_y );
+	write_long( __xdhud_fadeintime );
+	write_long( __xdhud_fadeouttime );
+	write_long( __xdhud_holdtime );
+	write_long( __xdhud_fxtime );
 	write_string( buffer );
 	message_end();
 }
@@ -1685,46 +1654,52 @@ stock send_dhudMessage( const index, const message[] )
 
 bool:hltv_open_connection(const host[], port, &socket, challenge[MAX_LEN_CHALLENGE])
 {
-    new error
-    socket = socket_open(host, port, SOCKET_UDP, error)
+    new error;
+    socket = socket_open(host, port, SOCKET_UDP, error);
     if(!(SOCK_ERROR_CREATE_SOCKET <= error <= SOCK_ERROR_WHILE_CONNECTING))
     {
-        socket_send2(socket, fmt("%c%c%c%cchallenge rcon", 0xFF, 0xFF, 0xFF, 0xFF), 23)
+        socket_send2(socket, fmt("%c%c%c%cchallenge rcon", 0xFF, 0xFF, 0xFF, 0xFF), 23);
         if(socket_is_readable(socket,500000) && socket_recv(socket, challenge, MAX_LEN_CHALLENGE))
         {
-            split_challenge(challenge)
-            return true
+            split_challenge(challenge);
+            return true;
         }
         else
         {
-            hltv_close_connection(socket)
-            return false
+            hltv_close_connection(socket);
+            return false;
         }
     }
-    return false
+    return false;
 }
 
 bool:hltv_send_cmd(socket, challenge[MAX_LEN_CHALLENGE], adminpass[], cmd[MAX_LEN_COMMAND], any:...)
 {
-    new buffer[MAX_LEN_COMMAND + MAX_LEN_CHALLENGE]
+    new buffer[MAX_LEN_COMMAND + MAX_LEN_CHALLENGE];
     
-    vformat(buffer, charsmax(buffer), cmd, 5)
-    format(buffer, charsmax(buffer), "%c%c%c%c%s ^"%s^" %s", 0xFF, 0xFF, 0xFF, 0xFF, challenge, adminpass, buffer)
+    vformat(buffer, charsmax(buffer), cmd, 5);
+    formatex(buffer, charsmax(buffer), "%c%c%c%c%s ^"%s^" %s", 0xFF, 0xFF, 0xFF, 0xFF, challenge, adminpass, buffer);
     
-    return socket_send2(socket, buffer, charsmax(buffer)) ? true : false
+    return socket_send2(socket, buffer, charsmax(buffer)) ? true : false;
 }
 
 bool:hltv_close_connection(socket)
 {
-    return socket_close(socket) ? true : false
+    return socket_close(socket) ? true : false;
 }
 
 split_challenge(input[])
 {
-    new i
+    new i;
     while(i != 13)
     {
-        input[i++] = ' '
+        input[i++] = ' ';
     }
-    trim(input)
+    trim(input);
+}
+
+msg_servername(iPlayer, msg[]) {
+	message_begin(MSG_ONE_UNRELIABLE, g_msgServerName, .player = iPlayer);
+	write_string(msg);
+	message_end();
 }
