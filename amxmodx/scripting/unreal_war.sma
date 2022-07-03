@@ -96,9 +96,9 @@ new cw_pause_enable;
 
 public plugin_init()
 {
-	register_plugin("UNREAL WAR MODE", "1.7", "Karaulov");
+	register_plugin("UNREAL WAR MODE", "1.8", "Karaulov");
 
-	create_cvar("unreal_war", "1.7", (FCVAR_SERVER | FCVAR_SPONLY | FCVAR_UNLOGGED));
+	create_cvar("unreal_war", "1.8", (FCVAR_SERVER | FCVAR_SPONLY | FCVAR_UNLOGGED));
 
 	register_clcmd("cw_mode_menu", "give_me_cw_menu")
 	register_clcmd("cw_menu", "give_me_cw_menu")
@@ -1531,6 +1531,15 @@ public cw_init_password(id)
 	}
 	server_exec();
 	
+	cw_print_password(id);
+	set_task_ex(5.0,"cw_print_password",.id = id);
+	set_task_ex(10.0,"cw_print_password",.id = id);
+}
+
+public cw_print_password(id)
+{
+	if (!is_user_connected(id))
+		return;
 	client_print_color(id, print_team_red, "^4[%s]^3 Установлен пароль ^1%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 	client_print_color(id, print_team_blue, "^4[%s]^3 Установлен пароль ^2%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 	client_print_color(id, print_team_default, "^4[%s]^3 Установлен пароль ^4%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
