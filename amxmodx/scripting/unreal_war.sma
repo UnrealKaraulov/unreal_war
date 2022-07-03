@@ -523,7 +523,7 @@ public cw_mode_update_gameinfo(id)
 		new message[33];
 		if (g_iGameStage == 1)
 		{
-			formatex(message,charsmax(message),"[CW] GAME: [WARMUP %d MIN]", g_iWarmupMinutes);
+			formatex(message,charsmax(message),"[CW] GAME: [WARMUP %d MIN]", g_iWarmupMinutes + 1);
 		}
 		else if (g_iGameStage == 2)
 		{
