@@ -234,28 +234,28 @@ public cw_mode_setup_rates(id)
 		server_cmd("sv_minrate 75000");
 		server_cmd("sv_maxrate 100000");
 		server_cmd("sv_minupdaterate 100");
-		server_cmd("sv_minupdaterate 102");
+		server_cmd("sv_maxupdaterate 102");
 	}
 	else if (id == 3)
 	{
 		server_cmd("sv_minrate 40000");
 		server_cmd("sv_maxrate 100000");
 		server_cmd("sv_minupdaterate 40");
-		server_cmd("sv_minupdaterate 90");
+		server_cmd("sv_maxupdaterate 90");
 	}
 	else if (id == 4)
 	{
 		server_cmd("sv_minrate 15000");
 		server_cmd("sv_maxrate 100000");
 		server_cmd("sv_minupdaterate 30");
-		server_cmd("sv_minupdaterate 60");
+		server_cmd("sv_maxupdaterate 60");
 	}
 	else
 	{
 		server_cmd("sv_minrate 25000");
 		server_cmd("sv_maxrate 100000");
 		server_cmd("sv_minupdaterate 30");
-		server_cmd("sv_minupdaterate 102");
+		server_cmd("sv_maxupdaterate 102");
 	}
 }
 
