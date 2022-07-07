@@ -9,7 +9,7 @@
 #include <sockets>
 
 #define PLUGIN_NAME			"Unreal ClanWar"
-#define PLUGIN_VERSION		"1.9"
+#define PLUGIN_VERSION		"1.10"
 #define PLUGIN_AUTHOR		"Karaulov"
 
 
