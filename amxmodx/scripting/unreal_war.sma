@@ -9,7 +9,7 @@
 #include <sockets>
 
 #define PLUGIN_NAME			"Unreal ClanWar"
-#define PLUGIN_VERSION		"1.10"
+#define PLUGIN_VERSION		"1.11"
 #define PLUGIN_AUTHOR		"Karaulov"
 
 
@@ -164,6 +164,7 @@ public plugin_init()
 	rh_get_mapname(g_sMapName,charsmax(g_sMapName),MNT_TRUE);
 	
 	get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
+	
 	cw_mode_setup_cvars();
 }
 
@@ -258,7 +259,7 @@ public cw_mode_setup_cvars()
 					.description = "Allow use pauses"
 	),	cw_pause_enable);
 	
-	server_cmd("exec %s/unreal_war/unreal_war.cfg", g_sConfigDirPath);
+	server_cmd("exec ^"%s/unreal_war/unreal_war.cfg^"", g_sConfigDirPath);
 	
 	
 	if (cw_warm_restart < 1)
@@ -270,7 +271,7 @@ public cw_mode_setup_cvars()
 	if (cw_game_restart < 1)
 		cw_game_restart = 1;
 	
-	server_cmd("exec %s/unreal_war/%s", g_sConfigDirPath,cw_startup_config);
+	server_cmd("exec ^"%s/unreal_war/%s^"", g_sConfigDirPath,cw_startup_config);
 	
 	
 	server_exec();
@@ -764,7 +765,7 @@ public cw_mode_init_game()
 	g_iGameStage = 0;
 	cw_mode_clear_all_stats();
 	
-	server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_game_config);
+	server_cmd("exec ^"%s/unreal_war/%s^"",g_sConfigDirPath, cw_game_config);
 	server_exec();
 }
 
@@ -1498,7 +1499,7 @@ public cw_mode_say_initialize(id)
 		set_task_ex(3.0,"cw_kick_players_game_start");
 		set_task_ex(5.0,"cw_kick_players_game_start");
 		
-		server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_warmup_config);
+		server_cmd("exec ^"%s/unreal_war/%s^"",g_sConfigDirPath, cw_warmup_config);
 		server_exec();
 		
 		cw_init_hostname_and_pwd(id);
@@ -1587,7 +1588,7 @@ public cw_warmup_time_end( id )
 	new Float:fStartDelay = cw_mode_unreal_restarts(cw_warm_restart,5.0,2.0);
 	set_task_ex(fStartDelay + 0.5,"cw_initialize_knife_round");
 	
-	server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_knife_config);
+	server_cmd("exec ^"%s/unreal_war/%s^"",g_sConfigDirPath, cw_knife_config);
 	server_exec();
 }
 
