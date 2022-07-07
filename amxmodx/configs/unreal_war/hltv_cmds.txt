@@ -1,0 +1,18 @@
+delay 60
+protocol 48
+maxclients 255
+slowmotion 1.0
+updaterate 102
+rate 100000
+maxrate 100000
+maxloss 0.1
+region 255
+blockvoice 1
+maxqueries 1000
+chatdelay 1
+autoretry 1
+nomaster 1
+hostname "HLTV FOR SERVER NAME"
+offlinetext "GAME is BUFFERING"
+signoncommands "echo HELLO WORLD"
+clearbanns

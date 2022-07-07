@@ -1264,9 +1264,9 @@ public client_disconnected(id)
 
 public client_putinserver(id)
 {  
-	new ipaddr[33];
-	get_user_ip(id,ipaddr,charsmax(ipaddr));
-	log_to_file("cw_mode.txt","JOINADDR:%s",ipaddr);
+	//new ipaddr[33];
+	//get_user_ip(id,ipaddr,charsmax(ipaddr));
+	//log_to_file("cw_mode.txt","JOINADDR:%s",ipaddr);
 	if ( is_user_bot(id) )
 		return;
 	if (cw_pov_autorecord > 0)
