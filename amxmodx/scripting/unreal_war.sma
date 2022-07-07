@@ -8,9 +8,18 @@
 #include <fun>
 #include <sockets>
 
+#define PLUGIN_NAME			"Unreal ClanWar"
+#define PLUGIN_VERSION		"1.9"
+#define PLUGIN_AUTHOR		"Karaulov"
+
+
+#define WARMUP_TASK 10001
+
 new bool:g_bActivateClanWarMode = false;
 
 new bool:g_bIsPaused = false;
+
+new g_sMapName[] = "no_map";
 
 new g_iPauseNum = 4;
 
@@ -65,10 +74,20 @@ new g_iWarmupMinutes = 5;
 
 new bool:g_bNeed1000Money = false;
 
+new g_sConfigDirPath[256];
+
 new bool:g_bHLTVWARN = true;
 
+new g_iHLTV_pid = 0;
+new bool:g_bHLTV_reconnect = false;
+new g_iHLTV_port;
+new g_sHLTV_ip[33];
+new g_iHLTV_socket = -1;
+new g_sHLTV_challenge[256];
+new g_bHLTV_need_record_demo = false;
 
-#define WARMUP_TASK 10001
+#define HLTV_HELLO_WORLD "Hello world"
+
 
 // Квары
 
@@ -85,6 +104,10 @@ new cw_pov_autorecord;
 new cw_norm_rounds;
 new cw_norm_winner;
 new cw_over_rounds;
+new cw_warm_restart;
+new cw_vote_restart;
+new cw_over_restart;
+new cw_game_restart;
 new cw_over_money;
 new cw_over_winlimit;
 new cw_rate_settings;
@@ -93,18 +116,17 @@ new cw_warmup_time;
 new cw_dhud_enable;
 new cw_pause_enable;
 
-
 public plugin_init()
 {
-	register_plugin("UNREAL WAR MODE", "1.8", "Karaulov");
+	register_plugin(PLUGIN_NAME, PLUGIN_VERSION, PLUGIN_AUTHOR);
 
-	create_cvar("unreal_war", "1.8", (FCVAR_SERVER | FCVAR_SPONLY | FCVAR_UNLOGGED));
+	register_cvar("unreal_war", PLUGIN_VERSION, FCVAR_SERVER | FCVAR_SPONLY);
 
-	register_clcmd("cw_mode_menu", "give_me_cw_menu")
-	register_clcmd("cw_menu", "give_me_cw_menu")
+	register_clcmd("cw_mode_menu", "cw_mode_show_menu")
+	register_clcmd("cw_menu", "cw_mode_show_menu")
 
-	register_clcmd("say cw_menu", "give_me_cw_menu")
-	register_clcmd("say /cw_menu", "give_me_cw_menu")
+	register_clcmd("say cw_menu", "cw_mode_show_menu")
+	register_clcmd("say /cw_menu", "cw_mode_show_menu")
 
 	register_concmd("say !pause", "cw_mode_saypause");
 	register_concmd("say_team !pause", "cw_mode_saypause");
@@ -139,6 +161,9 @@ public plugin_init()
 		nvault_prune( g_iVault , 0 , get_systime() );
 	}
 	
+	rh_get_mapname(g_sMapName,charsmax(g_sMapName),MNT_TRUE);
+	
+	get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 	cw_mode_setup_cvars();
 }
 
@@ -189,6 +214,22 @@ public cw_mode_setup_cvars()
 					.description = "Count of rounds in overtime game"
 	),	cw_over_rounds);
 	
+	bind_pcvar_num(create_cvar("cw_warm_restart", "3",
+					.description = "Count of restart after warmup"
+	),	cw_warm_restart);
+	
+	bind_pcvar_num(create_cvar("cw_vote_restart", "3",
+					.description = "Count of restart after knife round"
+	),	cw_vote_restart);
+	
+	bind_pcvar_num(create_cvar("cw_over_restart", "3",
+					.description = "Count of restart after first game"
+	),	cw_over_restart);
+	
+	bind_pcvar_num(create_cvar("cw_game_restart", "3",
+					.description = "Count of restart after overtime"
+	),	cw_game_restart);
+	
 	bind_pcvar_num(create_cvar("cw_over_money", "10000",
 					.description = "Money for overtimes"
 	),	cw_over_money);
@@ -217,11 +258,21 @@ public cw_mode_setup_cvars()
 					.description = "Allow use pauses"
 	),	cw_pause_enable);
 	
-	new g_sConfigDirPath[256];
-	get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 	server_cmd("exec %s/unreal_war/unreal_war.cfg", g_sConfigDirPath);
 	
+	
+	if (cw_warm_restart < 1)
+		cw_warm_restart = 1;
+	if (cw_vote_restart < 1)
+		cw_vote_restart = 1;
+	if (cw_over_restart < 1)
+		cw_over_restart = 1;
+	if (cw_game_restart < 1)
+		cw_game_restart = 1;
+	
 	server_cmd("exec %s/unreal_war/%s", g_sConfigDirPath,cw_startup_config);
+	
+	
 	server_exec();
 	
 	cw_mode_setup_rates(cw_rate_settings);
@@ -261,6 +312,10 @@ public cw_mode_setup_rates(id)
 
 public plugin_end()
 {
+	if (g_iHLTV_socket != -1)
+	{
+		hltv_close_connection(g_iHLTV_socket);
+	}
 	if (g_iVault != INVALID_HANDLE)
 	{
 		nvault_close(g_iVault);
@@ -277,20 +332,7 @@ public bool:is_game_started()
 	return g_iGameStage == 0 && is_cw_mode_active();
 }
 
-public bool:is_any_hltv_found()
-{
-	new mPlayers[32];
-	new mCount;
-	get_players(mPlayers, mCount, "c");
-	for(new i = 0; i < mCount;i++)
-	{
-		if (is_user_hltv(mPlayers[i]))
-			return true;
-	}
-	return false;
-}
-
-public give_me_cw_menu(id)
+public cw_mode_show_menu(id)
 {
 	if (get_user_flags(id) & ADMIN_BAN)
 	{
@@ -344,7 +386,7 @@ public CW_MENU_HANDLER(id, vmenu, item)
 	{
 		case 1:
 		{
-			if (g_bHLTVWARN && !is_any_hltv_found())
+			if (g_bHLTVWARN && g_iHLTV_pid == 0)
 			{
 				g_bHLTVWARN = false;
 				client_print_color(0, print_team_red, "^4[%s]^3 Вы пытаетесь запустить CW без HLTV!!!!",cw_servername);
@@ -353,7 +395,6 @@ public CW_MENU_HANDLER(id, vmenu, item)
 			}
 			else 
 				cw_mode_say_initialize(id);
-				
 		}
 		case 2:
 		{
@@ -673,52 +714,47 @@ public cw_mode_vote_post(id)
 	{
 		if (g_bTerroristWinners)
 		{
-			set_task_ex(1.5,"cw_mode_show_message_vote_end");
-			set_task_ex(2.5,"cw_mode_show_message_no_change_team");
+			set_task_ex(0.5,"cw_mode_show_message_vote_end");
+			set_task_ex(1.5,"cw_mode_show_message_no_change_team");
 		}
 		else 
 		{
 			server_cmd("swapteams");
 			server_exec();
 			swap_wins2();
-			set_task_ex(1.5,"cw_mode_show_message_vote_end");
-			set_task_ex(2.5,"cw_mode_show_message_change_team");
+			set_task_ex(0.5,"cw_mode_show_message_vote_end");
+			set_task_ex(1.5,"cw_mode_show_message_change_team");
 		}
 	}
 	else if (g_iVotesCT > g_iVotesTT)
 	{
 		if (!g_bTerroristWinners)
 		{
-			set_task_ex(1.5,"cw_mode_show_message_vote_end");
-			set_task_ex(2.5,"cw_mode_show_message_no_change_team");
+			set_task_ex(0.5,"cw_mode_show_message_vote_end");
+			set_task_ex(1.5,"cw_mode_show_message_no_change_team");
 		}
 		else 
 		{
 			server_cmd("swapteams");
 			server_exec();
 			swap_wins2();
-			set_task_ex(1.5,"cw_mode_show_message_vote_end");
-			set_task_ex(2.5,"cw_mode_show_message_change_team");
+			set_task_ex(0.5,"cw_mode_show_message_vote_end");
+			set_task_ex(1.5,"cw_mode_show_message_change_team");
 		}
 	}
 	else if (g_iVotesCT == g_iVotesTT && g_iVotesTT > 0)
 	{
-		set_task_ex(1.5,"cw_mode_show_message_vote_end");
-		set_task_ex(2.5,"cw_mode_show_message_no_choose_team");
+		set_task_ex(0.5,"cw_mode_show_message_vote_end");
+		set_task_ex(1.5,"cw_mode_show_message_no_choose_team");
 	}
 	else 
 	{
-		set_task_ex(1.5,"cw_mode_show_message_vote_end");
-		set_task_ex(2.5,"cw_mode_show_message_no_change_team");
+		set_task_ex(0.5,"cw_mode_show_message_vote_end");
+		set_task_ex(1.5,"cw_mode_show_message_no_change_team");
 	}
 	
-	set_task_ex(5.5,"cw_mode_game_happy");
-	set_task_ex(8.0,"cw_mode_game_happy");
-	set_task_ex(10.5,"cw_mode_game_happy");
-	
-	set_task_ex(10.0,"cw_mode_restartround");
-	set_task_ex(11.0,"cw_mode_restartround");
-	set_task_ex(12.0,"cw_mode_restartround");
+	new Float:fStartDelay = cw_mode_unreal_restarts(cw_vote_restart,10.0,2.0);
+	set_task_ex(fStartDelay + 0.5,"cw_mode_game_happy");
 	
 	cw_mode_init_game();
 }
@@ -728,8 +764,6 @@ public cw_mode_init_game()
 	g_iGameStage = 0;
 	cw_mode_clear_all_stats();
 	
-	new g_sConfigDirPath[256];
-	get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 	server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_game_config);
 	server_exec();
 }
@@ -766,7 +800,7 @@ public CW_TEAMMENU_HANDLER(id, vmenu, item)
 public cw_mode_winner_is_ct()
 {
 	new buffer[128];
-	formatex(buffer,charsmax(buffer),"Counter-Terrorist'ы победили в игре №%d",g_iGameNum);
+	formatex(buffer,charsmax(buffer),"Counter-Terrorist'ы победили в %d игре!",g_iGameNum);
 	xset_dhudmessage(0, 150, 240, -1.0, 0.25, 0, 0.0, 6.0, 0.0, 0.0);
 	xshow_dhudmessage(0, buffer);
 }
@@ -774,7 +808,7 @@ public cw_mode_winner_is_ct()
 public cw_mode_winner_is_tt()
 {
 	new buffer[128];
-	formatex(buffer,charsmax(buffer),"Terrorist'ы победили в игре №%d",g_iGameNum);
+	formatex(buffer,charsmax(buffer),"Terrorist'ы победили в %d игре!",g_iGameNum);
 	xset_dhudmessage(240, 150, 0, -1.0, 0.25, 0, 0.0, 6.0, 0.0, 0.0);
 	xshow_dhudmessage(0, buffer);
 }
@@ -871,6 +905,71 @@ public cw_menu_vote_team_ct()
 
 public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 {  
+	if (g_bHLTV_reconnect && g_iHLTV_pid == 0 && cw_hltv_rcon[0] != EOS )
+	{
+		cw_mode_hltv_initialize(0);
+		if (g_iHLTV_socket != -1)
+		{
+			if (cw_mode_hltv_set_password())
+			{
+				new server_ip[33];
+				new buffer[256];
+				get_user_ip(0,server_ip,charsmax(server_ip));
+				if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"connect %s",server_ip))
+				{
+					if (hltv_recv_cmd(g_iHLTV_socket,buffer,charsmax(buffer)))
+					{
+						g_bHLTV_reconnect = false;
+						log_to_file("cw_mode.txt","HLTV reconnected.");
+					}
+					else 
+					{
+						log_to_file("cw_mode.txt","HLTV can't reconnect at this moment. Wait next round.");
+						hltv_close_connection(g_iHLTV_socket);
+						g_iHLTV_socket = -1;
+					}
+				}
+				else 
+				{
+					log_to_file("cw_mode.txt","HLTV[3] can't reconnect at this moment. Wait next round.");
+					hltv_close_connection(g_iHLTV_socket);
+					g_iHLTV_socket = -1;
+				}
+			}
+		}
+		else 
+		{
+			log_to_file("cw_mode.txt","HLTV[2] can't reconnect at this moment. Wait next round.");
+		}
+	}
+	else if (g_iHLTV_pid != 0)
+	{
+		g_bHLTV_reconnect = false;
+	}
+	
+	if (cw_hltv_autorecord > 0 && g_bHLTV_need_record_demo && g_iHLTV_socket != -1 && g_iHLTV_pid != 0)
+	{	
+		if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"%s","stoprecording"))
+		{
+			new buffer[256];
+			if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"record cw_%d",tickcount()))
+			{
+				hltv_recv_cmd(g_iHLTV_socket,buffer,charsmax(buffer));
+			}
+			else 
+			{
+				log_to_file("cw_mode.txt","HLTV error while record demo.");
+				hltv_close_connection(g_iHLTV_socket);
+				g_iHLTV_socket = -1;
+			}
+		}
+		else 
+		{
+			log_to_file("cw_mode.txt","HLTV error while record demo.");
+			hltv_close_connection(g_iHLTV_socket);
+			g_iHLTV_socket = -1;
+		}
+	}	
 	if (status == WINSTATUS_NONE || event == ROUND_GAME_COMMENCE
 		|| event == ROUND_GAME_RESTART || !is_cw_mode_active())
 	{
@@ -940,6 +1039,8 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 		{
 			g_iGameNum++;
 			// Часть функционала не используется
+			new Float:fStartDelay = cw_mode_unreal_restarts(cw_game_restart - 1,1.5,2.0);
+			
 			if (g_bSwappedWinners)
 			{
 				if (g_iWins_CT > g_iWins_TT)
@@ -948,7 +1049,7 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 					client_print_color(0, print_team_blue, "^4[%s]^1 В ^4%d^1 игре победили ^3Counter-Terrorist'ы",cw_servername,g_iGameNum);
 					client_print_color(0, print_team_blue, "^4[%s]^1 В ^4%d^1 игре победили ^3Counter-Terrorist'ы",cw_servername,g_iGameNum);
 					
-					set_task_ex(1.0, "cw_mode_winner_is_ct");
+					set_task_ex(fStartDelay + 0.5, "cw_mode_winner_is_ct");
 				}
 				else
 				{
@@ -956,7 +1057,7 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 					client_print_color(0, print_team_red, "^4[%s]^1 В ^4%d^1 игре победили ^3Terrorist'ы",cw_servername,g_iGameNum);
 					client_print_color(0, print_team_red, "^4[%s]^1 В ^4%d^1 игре победили ^3Terrorist'ы",cw_servername,g_iGameNum);
 					
-					set_task_ex(1.0, "cw_mode_winner_is_tt");
+					set_task_ex(fStartDelay, "cw_mode_winner_is_tt");
 				}
 			}
 			else 
@@ -967,7 +1068,7 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 					client_print_color(0, print_team_blue, "^4[%s]^1 В ^4%d^1 игре победили ^3Counter-Terrorist'ы",cw_servername,g_iGameNum);
 					client_print_color(0, print_team_blue, "^4[%s]^1 В ^4%d^1 игре победили ^3Counter-Terrorist'ы",cw_servername,g_iGameNum);
 					
-					set_task_ex(1.0, "cw_mode_winner_is_ct");
+					set_task_ex(fStartDelay, "cw_mode_winner_is_ct");
 				}
 				else
 				{
@@ -975,13 +1076,12 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 					client_print_color(0, print_team_red, "^4[%s]^1 В ^4%d^1 игре победили ^3Terrorist'ы",cw_servername,g_iGameNum);
 					client_print_color(0, print_team_red, "^4[%s]^1 В ^4%d^1 игре победили ^3Terrorist'ы",cw_servername,g_iGameNum);
 					
-					set_task_ex(1.0, "cw_mode_winner_is_tt");
+					set_task_ex(fStartDelay, "cw_mode_winner_is_tt");
 				}
 			}
 			
-			server_cmd("swapteams");
+			server_cmd("swapteams"); // with swapteams, one restart generated
 			server_exec();
-			cw_mode_multirestart();
 			swap_wins2();
 		}
 		else if (g_iOverTimeLastRound > 0)
@@ -1007,8 +1107,9 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 				{
 					g_iOverTimes++;
 					g_iOverTimeLastRound = g_Round;
-				
+					
 					server_cmd("swapteams");
+					
 					server_exec();
 					swap_wins2();
 					g_iGameNum++;
@@ -1089,12 +1190,13 @@ public CS_RoundEnd(WinStatus:status, ScenarioEventEndRound:event, Float:tmDelay)
 			{		
 				if (cw_over_money != 0)
 					g_bNeed1000Money = true;
-					
-				server_cmd("sv_restart 1");
+				
+				new Float:fStartDelay = cw_mode_unreal_restarts(cw_over_restart,1.5,2.0);
+				
 				client_print_color(0, print_team_red, "^4[%s]^3 Ничья! Дополнительные 3 раунда!",cw_servername);
 				client_print_color(0, print_team_red, "^4[%s]^3 Ничья! Дополнительные 3 раунда!",cw_servername);
 			
-				set_task_ex(1.5,"cw_mode_game_overtime2");
+				set_task_ex(fStartDelay + 0.5,"cw_mode_game_overtime2");
 				
 				g_iOverTimeLastRound = g_Round;
 				g_iOverTimes++;
@@ -1252,6 +1354,18 @@ public cw_mode_watcher(id)
 
 public client_disconnected(id)
 {
+	remove_task(id);
+	if (g_iHLTV_pid == id && cw_hltv_rcon[0] != EOS )
+	{
+		g_iHLTV_pid = 0;
+		g_bHLTV_reconnect = true;
+		log_to_file("cw_mode.txt","HLTV DISCONNECTED. TRIED TO RECONNECT AT ROUND END.");
+		
+		if (cw_hltv_autorecord > 0)
+		{
+			g_bHLTV_need_record_demo = true;
+		}
+	}
 	if (is_user_bot(id) || is_user_hltv(id))
 		return;
 	nvault_set_array(g_iVault, g_ClanWarData[id][AUTHID], g_ClanWarData[id], sizeof(g_ClanWarData[]));
@@ -1259,24 +1373,42 @@ public client_disconnected(id)
 	g_ClanWarData[id][DEATHS] = 0;
 	g_ClanWarData[id][PASSWORD] = 0;
 	g_ClanWarData[id][AUTHID][0] = EOS;
-	remove_task(id);
 }
+
 
 public client_putinserver(id)
 {  
-	//new ipaddr[33];
-	//get_user_ip(id,ipaddr,charsmax(ipaddr));
-	//log_to_file("cw_mode.txt","JOINADDR:%s",ipaddr);
+	if (is_user_hltv(id) && cw_hltv_rcon[0] != EOS && g_iHLTV_pid == 0)
+	{
+		g_iHLTV_pid = id;
+		new user_iport[33];
+		new user_port[33];
+		
+		get_user_ip(id,user_iport,charsmax(user_iport));
+		unreal_split(user_iport,g_sHLTV_ip,charsmax(g_sHLTV_ip),user_port,charsmax(user_port),":");
+		g_iHLTV_port = str_to_num(user_port);
+		log_to_file("cw_mode.txt","Detected HLTV IP:%s, PORT:%d",g_sHLTV_ip,g_iHLTV_port);
+		
+		if (!task_exists(id))
+			set_task_ex(1.0,"cw_mode_hltv_fullinitialize",id);
+	}
+	else if (g_iHLTV_pid == id)
+	{
+		g_iHLTV_pid = 0;
+	}
+	
 	if ( is_user_bot(id) )
 		return;
+	if ( is_user_hltv(id) )
+		return;
+		
 	if (cw_pov_autorecord > 0)
 	{
 		set_task_ex(5.0, "cw_stop_demo", .id = id);
 		set_task_ex(10.0, "cw_stop_demo", .id = id);
 	}
-	if ( is_user_hltv(id) )
-		return;
 	get_user_authid(id, g_ClanWarData[id][AUTHID], charsmax(g_ClanWarData[][AUTHID]));
+	
 	if (nvault_get_array(g_iVault, g_ClanWarData[id][AUTHID], g_ClanWarData[id], sizeof(g_ClanWarData[])) > 0)
 	{
 		if (g_ClanWarData[id][PASSWORD] != g_iServerPassword)
@@ -1295,8 +1427,8 @@ public client_putinserver(id)
 	
 	if (cw_pov_autorecord > 0)
 	{
-		set_task_ex(25.0, "cw_record_demo_notify", .id = id);
-		set_task_ex(30.0, "cw_record_demo", .flags = SetTask_Repeat ,.id = id);
+		set_task_ex(15.0, "cw_record_demo_notify", .id = id);
+		set_task_ex(20.0, "cw_record_demo", .flags = SetTask_Repeat ,.id = id);
 	}
 }
 
@@ -1312,9 +1444,7 @@ public cw_record_demo_notify(id)
 
 public cw_record_demo(id)
 {
-	new mapname[33];
-	get_mapname(mapname,charsmax(mapname));
-	client_cmd(id,"record ^"cw_%s^"",mapname);
+	client_cmd(id,"record ^"cw_%s^"",g_sMapName);
 }
 
 public cw_mode_say_initialize(id)	
@@ -1328,6 +1458,37 @@ public cw_mode_say_initialize(id)
 		}
 		g_bActivateClanWarMode = true;
 		
+		if (cw_hltv_autorecord > 0)
+		{
+			g_bHLTV_need_record_demo = true;
+			
+			if (g_iHLTV_socket != -1 && g_iHLTV_pid != 0 )
+			{		
+				if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"%s","stoprecording"))
+				{
+					new buffer[256];
+					hltv_recv_cmd(g_iHLTV_socket,buffer,charsmax(buffer));
+					if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"record cw_%s",g_sMapName))
+					{
+						hltv_recv_cmd(g_iHLTV_socket,buffer,charsmax(buffer));
+						g_bHLTV_need_record_demo = false;
+					}
+					else 
+					{
+						log_to_file("cw_mode.txt","HLTV[2] error while record demo.");
+						hltv_close_connection(g_iHLTV_socket);
+						g_iHLTV_socket = -1;
+					}
+				}
+				else 
+				{
+					log_to_file("cw_mode.txt","HLTV[2] error while record demo.");
+					hltv_close_connection(g_iHLTV_socket);
+					g_iHLTV_socket = -1;
+				}
+			}
+		}
+		
 		cw_stop_preinstalled_plugins(id);
 		cw_init_password(id);
 		
@@ -1337,8 +1498,6 @@ public cw_mode_say_initialize(id)
 		set_task_ex(3.0,"cw_kick_players_game_start");
 		set_task_ex(5.0,"cw_kick_players_game_start");
 		
-		new g_sConfigDirPath[256];
-		get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 		server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_warmup_config);
 		server_exec();
 		
@@ -1355,6 +1514,17 @@ public cw_mode_say_initialize(id)
 		g_ClanWarData[id][KILLS] = 0;
 		g_ClanWarData[id][DEATHS] = 0;
 	}
+}
+
+public Float:cw_mode_unreal_restarts(count,Float:fStartDelay,Float:fReStartDelay)
+{
+	new Float:fRestDel = fStartDelay;
+	for(new i = 0; i < count; i++)
+	{
+		set_task_ex(fRestDel,"cw_mode_restartround");
+		fRestDel+=fReStartDelay;
+	}
+	return fRestDel;
 }
 
 public cw_mode_map_restart(id)	
@@ -1414,24 +1584,11 @@ public cw_warmup_time_end( id )
 	xset_dhudmessage(100, 150, 0, -1.0, 0.25, 0, 0.0, 7.0, 0.0, 0.0);
 	xshow_dhudmessage(0, "Разминка завершена...");
 	
-	set_task_ex(2.0,"cw_mode_restartround");
-	set_task_ex(4.0,"cw_mode_restartround");
+	new Float:fStartDelay = cw_mode_unreal_restarts(cw_warm_restart,5.0,2.0);
+	set_task_ex(fStartDelay + 0.5,"cw_initialize_knife_round");
 	
-	set_task_ex(6.0,"cw_initialize_knife_round");
-	
-	
-	
-	new g_sConfigDirPath[256];
-	get_configsdir(g_sConfigDirPath, charsmax(g_sConfigDirPath));
 	server_cmd("exec %s/unreal_war/%s",g_sConfigDirPath, cw_knife_config);
 	server_exec();
-}
-
-public cw_mode_multirestart()
-{
-	set_task_ex(2.0,"cw_mode_restartround");
-	set_task_ex(4.0,"cw_mode_restartround");
-	set_task_ex(6.0,"cw_mode_restartround");
 }
 
 public cw_mode_restartround(id)
@@ -1441,7 +1598,6 @@ public cw_mode_restartround(id)
 
 public cw_initialize_knife_round(id)
 {
-	server_cmd("sv_restart 1");
 	if (cw_knife_round > 0)
 	{
 		client_print_color(0, print_team_red, "^4[%s]^3 Раунд на ножах за выбор команды! Вперед!!!",cw_servername);
@@ -1518,36 +1674,36 @@ public cw_init_password(id)
 	g_iServerPassword = random_num(1000,9999);
 	server_cmd("sv_password ^"%d^"",g_iServerPassword);
 	
-	new mPlayers[32];
-	new mCount;
-	get_players(mPlayers, mCount);
-	for(new i = 0; i < mCount; i++)
-	{
-		if (is_user_hltv(mPlayers[i]))
-		{
-			client_cmd(mPlayers[id], "serverpassword ^"%d^"", g_iServerPassword)
-			break;
-		}
-	}
 	server_exec();
 	
 	cw_print_password(id);
 	set_task_ex(5.0,"cw_print_password",.id = id);
 	set_task_ex(10.0,"cw_print_password",.id = id);
+	
+	
+	if (g_iHLTV_socket != -1)
+	{
+		cw_mode_hltv_set_password();
+	}
 }
 
 public cw_print_password(id)
 {
 	if (!is_user_connected(id))
 		return;
+		
+	new buffer[256];
+	formatex(buffer,charsmax(buffer),"Установлен пароль %d. Сообщите игрокам!",g_iServerPassword);
 	client_print_color(id, print_team_red, "^4[%s]^3 Установлен пароль ^1%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 	client_print_color(id, print_team_blue, "^4[%s]^3 Установлен пароль ^2%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
 	client_print_color(id, print_team_default, "^4[%s]^3 Установлен пароль ^4%d^3, сообщите всем игрокам!",cw_servername, g_iServerPassword);
+	xset_dhudmessage(255, 40, 0, -1.0, 0.45, 0, 0.0, 5.5, 0.0, 0.0);
+	xshow_dhudmessage(id, buffer);
 }
 
 public cw_init_hostname_and_pwd(id)
 {
-	cw_mode_multirestart();
+	cw_mode_unreal_restarts(cw_warm_restart,1.5,2.0);
 	
 	g_bIsPaused = false;
 	
@@ -1569,6 +1725,99 @@ public cw_init_hostname_and_pwd(id)
 	server_cmd("hostname ^"%s^"",cw_servername);
 	set_member_game(m_GameDesc, "PIN-CODE!");
 	server_exec();
+}
+
+
+public cw_mode_hltv_initialize(id)
+{
+	g_sHLTV_challenge[0] = EOS;
+	if (g_iHLTV_socket != -1)
+	{
+		hltv_close_connection(g_iHLTV_socket);
+		g_iHLTV_socket = -1;
+	}
+	if (hltv_open_connection(g_sHLTV_ip,g_iHLTV_port,g_iHLTV_socket))
+	{
+		log_to_file("cw_mode.txt","Connected. Test HLTV connection with password %s....",cw_hltv_rcon);
+		if (hltv_get_challenge(g_iHLTV_socket,g_sHLTV_challenge,charsmax(g_sHLTV_challenge)) && g_sHLTV_challenge[0] != EOS)
+		{
+			log_to_file("cw_mode.txt","Found connection challenge = %s", g_sHLTV_challenge);
+			log_to_file("cw_mode.txt","Sending 'hello world' to HLTV...");
+			if (hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"echo %s",HLTV_HELLO_WORLD))
+			{
+				log_to_file("cw_mode.txt","Succeful connected to HLTV.");
+				new buffer[256];
+				if (hltv_recv_cmd(g_iHLTV_socket,buffer,charsmax(buffer)))
+				{
+					log_to_file("cw_mode.txt","Connected success.");
+				}
+				else 
+				{
+					log_to_file("cw_mode.txt","Bad rcon password.");
+					hltv_close_connection(g_iHLTV_socket);
+					g_iHLTV_socket = -1;
+				}
+			}
+			else 
+			{
+				log_to_file("cw_mode.txt","Bad CHALLENGE. Closing connection...");
+				hltv_close_connection(g_iHLTV_socket);
+				g_iHLTV_socket = -1;
+			}
+		}
+		else 
+		{
+			log_to_file("cw_mode.txt","No result. Closing connection...");
+			hltv_close_connection(g_iHLTV_socket);
+			g_iHLTV_socket = -1;
+		}
+	}
+	else 
+	{
+		g_iHLTV_socket = -1;
+		log_to_file("cw_mode.txt","Failed to open connection to HLTV.");
+	}
+}
+
+public cw_mode_hltv_fullinitialize(id)
+{
+	cw_mode_hltv_initialize(id);
+	if (g_iHLTV_socket != -1)
+	{
+		log_to_file("cw_mode.txt","Sending default configuration from hltv_cmds.txt");
+		new path[256];
+		formatex(path,charsmax(path),"%s/unreal_war/%s",g_sConfigDirPath, "hltv_cmds.txt");
+		
+		if (hltv_send_file(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,path))
+		{
+			log_to_file("cw_mode.txt","SUCCESS!");
+		}
+		else 
+		{
+			log_to_file("cw_mode.txt","Error while executing hltv_cmds.txt. Closing connection...");
+			hltv_close_connection(g_iHLTV_socket);
+			g_iHLTV_socket = -1;
+		}
+	}
+}
+
+public cw_mode_hltv_set_password()
+{
+	log_to_file("cw_mode.txt","HLTV: set serverpassword...");
+	if (g_iServerPassword == 0)
+		return true;
+	if (!hltv_send_cmd(g_iHLTV_socket,g_sHLTV_challenge,cw_hltv_rcon,"serverpassword ^"%d^"",g_iServerPassword))
+	{
+		hltv_close_connection(g_iHLTV_socket);
+		g_iHLTV_socket = -1;
+		log_to_file("cw_mode.txt","HLTV lost connection...");
+		return false;
+	}
+	else 
+	{
+		log_to_file("cw_mode.txt","Success.");
+	}
+	return true;
 }
 
 stock rg_set_user_deaths(const player, deaths) {
@@ -1637,10 +1886,10 @@ stock xset_dhudmessage( red = 0, green = 160, blue = 0, Float:x = -1.0, Float:y 
 
 stock xshow_dhudmessage( index, const message[])
 {
-	send_dhudMessage(index,message);
+	send_xdhudMessage(index, message);
 }
 
-stock send_dhudMessage( const index, const message[] )
+stock send_xdhudMessage( const index, const message[] )
 {
 	new buffer[ 128 ];
 	formatex(buffer,charsmax(buffer),"%s",message);
@@ -1659,38 +1908,84 @@ stock send_dhudMessage( const index, const message[] )
 	message_end();
 }
 
-#define MAX_LEN_COMMAND 40
-#define MAX_LEN_CHALLENGE 32
-
-bool:hltv_open_connection(const host[], port, &socket, challenge[MAX_LEN_CHALLENGE])
+bool:hltv_open_connection(const host[], port, &socket)
 {
-    new error;
-    socket = socket_open(host, port, SOCKET_UDP, error);
-    if(!(SOCK_ERROR_CREATE_SOCKET <= error <= SOCK_ERROR_WHILE_CONNECTING))
-    {
-        socket_send2(socket, fmt("%c%c%c%cchallenge rcon", 0xFF, 0xFF, 0xFF, 0xFF), 23);
-        if(socket_is_readable(socket,500000) && socket_recv(socket, challenge, MAX_LEN_CHALLENGE))
-        {
-            split_challenge(challenge);
-            return true;
-        }
-        else
-        {
-            hltv_close_connection(socket);
-            return false;
-        }
-    }
-    return false;
+	new error;
+	socket = socket_open(host, port, SOCKET_UDP, error);
+	if(!(SOCK_ERROR_CREATE_SOCKET <= error <= SOCK_ERROR_WHILE_CONNECTING))
+	{
+		socket_send2(socket, fmt("%c%c%c%cchallenge rcon", 0xFF, 0xFF, 0xFF, 0xFF), 23);
+		return true;
+	}
+	return false;
 }
 
-bool:hltv_send_cmd(socket, challenge[MAX_LEN_CHALLENGE], adminpass[], cmd[MAX_LEN_COMMAND], any:...)
+bool:hltv_send_cmd(socket, challenge[], adminpass[], cmd[], any:...)
 {
-    new buffer[MAX_LEN_COMMAND + MAX_LEN_CHALLENGE];
+    new snd_buff[512];
+    new fmt_buff[512];
     
-    vformat(buffer, charsmax(buffer), cmd, 5);
-    formatex(buffer, charsmax(buffer), "%c%c%c%c%s ^"%s^" %s", 0xFF, 0xFF, 0xFF, 0xFF, challenge, adminpass, buffer);
+    vformat(fmt_buff, charsmax(fmt_buff), cmd, 5);
+    formatex(snd_buff, charsmax(snd_buff), "%c%c%c%c%s ^"%s^" %s", 0xFF, 0xFF, 0xFF, 0xFF, challenge, adminpass, fmt_buff);
     
-    return socket_send2(socket, buffer, charsmax(buffer)) ? true : false;
+    return socket_send2(socket, snd_buff, charsmax(snd_buff)) ? true : false;
+}
+
+bool:hltv_recv_cmd(socket,cmd[],cmdLen, skipbytes = 0)
+{
+	if(socket_is_readable(socket,500000) && socket_recv(socket, cmd, cmdLen))
+    {
+//		log_amx("Recv %s",cmd);
+		copy(cmd,cmdLen,cmd[skipbytes]);
+		return true;
+	}
+	return false;
+}
+
+bool:hltv_send_file(socket, challenge[], adminpass[], file[])
+{
+	new cmd_buff[256];
+	new cmd_len;
+	new cmd_id = 0;
+	log_amx("HLTV: File:%s",file);
+	if(file_exists(file))
+	{
+		while(read_file(file, cmd_id ,cmd_buff, charsmax(cmd_buff), cmd_len))
+		{
+			log_amx("HLTV: Exec:%s",cmd_buff);
+			cmd_id+=1;
+			if (cmd_len == 0 || cmd_buff[0] == '/' ||  cmd_buff[0] == ';')
+				continue;
+			if (hltv_send_cmd(socket,challenge,adminpass,"%s",cmd_buff))
+			{
+				
+			}
+			else 
+			{
+				return false;
+			}
+		}
+	}
+	else 
+	{
+		log_amx("HLTV: File not found");
+	}
+	hltv_recv_cmd(socket,cmd_buff,charsmax(cmd_buff));
+	return true;
+}
+
+bool:hltv_get_challenge(socket, challenge[],challengeLen)
+{
+	if (hltv_recv_cmd(socket, challenge,challengeLen))
+	{
+		if (containi(challenge,"rcon") > -1)
+		{
+			copy(challenge,challengeLen,challenge[containi(challenge,"rcon")]);
+			trim(challenge);
+			return true;
+		}
+	}
+	return false;
 }
 
 bool:hltv_close_connection(socket)
@@ -1698,18 +1993,23 @@ bool:hltv_close_connection(socket)
     return socket_close(socket) ? true : false;
 }
 
-split_challenge(input[])
-{
-    new i;
-    while(i != 13)
-    {
-        input[i++] = ' ';
-    }
-    trim(input);
-}
-
 msg_servername(iPlayer, msg[]) {
 	message_begin(MSG_ONE_UNRELIABLE, g_msgServerName, .player = iPlayer);
 	write_string(msg);
 	message_end();
+}
+
+stock unreal_split(const szInput[], szLeft[], sL_Max, szRight[], sR_Max, const szDelim[])
+{
+	new i = containi(szInput,szDelim);
+	if (i <= 0)
+	{
+		szLeft[0] = EOS;
+		szRight[0] = EOS;
+		return 0;
+	}
+	copy(szLeft,sL_Max,szInput);
+	szLeft[i] = EOS;
+	copy(szRight,sR_Max,szInput[i + 1]);
+	return 1;
 }
