@@ -47,10 +47,12 @@ new g_iUserCW = 0;
 
 enum _:cwData
 {
+	USERNAME[MAX_NAME_LENGTH],
+	AUTHID[MAX_AUTHID_LENGTH],
+	ANOTHERINFO[512],
     KILLS,
     DEATHS,
-    PASSWORD,
-	AUTHID[MAX_AUTHID_LENGTH]
+    PASSWORD
 } new g_ClanWarData[MAX_PLAYERS+1][cwData];
 
 
@@ -1409,6 +1411,7 @@ public client_putinserver(id)
 		set_task_ex(10.0, "cw_stop_demo", .id = id);
 	}
 	get_user_authid(id, g_ClanWarData[id][AUTHID], charsmax(g_ClanWarData[][AUTHID]));
+	get_user_name(id, g_ClanWarData[id][USERNAME], charsmax(g_ClanWarData[][USERNAME]));
 	
 	if (nvault_get_array(g_iVault, g_ClanWarData[id][AUTHID], g_ClanWarData[id], sizeof(g_ClanWarData[])) > 0)
 	{
